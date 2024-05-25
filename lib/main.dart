@@ -6,6 +6,7 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:oauth2/oauth2.dart' as oauth2;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(MyApp());
@@ -43,6 +44,25 @@ class _SignInDemoState extends State<SignInDemo> {
 
   bool _isPaused = false;
   List<Map<String, dynamic>> _uploadHistory = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory();
+  }
+
+  Future<void> _loadHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final historyString = prefs.getString('uploadHistory');
+    if (historyString != null) {
+      _uploadHistory = List<Map<String, dynamic>>.from(jsonDecode(historyString));
+    }
+  }
+
+  Future<void> _saveHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('uploadHistory', jsonEncode(_uploadHistory));
+  }
 
   Future<void> _signIn() async {
     final grant = oauth2.AuthorizationCodeGrant(identifier, authorizationEndpoint, tokenEndpoint, secret: secret);
@@ -117,6 +137,8 @@ class _SignInDemoState extends State<SignInDemo> {
       _uploadHistory.add({'filename': filename, 'status': 'Failed to upload photo'});
     }
 
+    await _saveHistory();
+
     final elapsedTime = stopwatch.elapsedMilliseconds / 1000; // seconds
     final uploadedBytes = bytes.length;
     final uploadSpeed = uploadedBytes / elapsedTime / 1024; // kB/s
@@ -142,7 +164,6 @@ class _SignInDemoState extends State<SignInDemo> {
     _uploadedCount.value = 0;
     _uploadSpeed.value = 0.0;
     _estimatedTime.value = 0;
-    _uploadHistory.clear();
 
     int totalBytes = 0;
     for (var pickedFile in result.files) {
@@ -167,6 +188,36 @@ class _SignInDemoState extends State<SignInDemo> {
       final file = File(pickedFile.path!);
       final filename = pickedFile.name;
       await _uploadFile(file, filename, totalBytes, stopwatch, uploadSpeedController);
+    }
+
+    uploadSpeedController.close();
+  }
+
+  Future<void> _retryFailedUploads() async {
+    if (_client == null) return;
+
+    final failedUploads = _uploadHistory.where((item) => item['status'] != 'Success').toList();
+    _totalCount.value = failedUploads.length;
+    _uploadedCount.value = 0;
+    _uploadSpeed.value = 0.0;
+    _estimatedTime.value = 0;
+
+    final stopwatch = Stopwatch()..start();
+    final uploadSpeedController = StreamController<double>();
+    uploadSpeedController.stream.listen((uploadSpeed) {
+      _uploadSpeed.value = (_uploadSpeed.value * (_uploadedCount.value - 1) + uploadSpeed) / _uploadedCount.value;
+      final remainingBytes = (_totalCount.value * _currentFileSize.value) - (_uploadSpeed.value * 1024 * stopwatch.elapsedMilliseconds / 1000).toInt();
+      final estimatedRemainingTime = remainingBytes / (_uploadSpeed.value * 1024);
+      _estimatedTime.value = estimatedRemainingTime.toInt();
+    });
+
+    for (var upload in failedUploads) {
+      while (_isPaused) {
+        await Future.delayed(Duration(milliseconds: 100));
+      }
+      final file = File(upload['filename']);
+      final filename = upload['filename'];
+      await _uploadFile(file, filename, _totalCount.value * _currentFileSize.value, stopwatch, uploadSpeedController);
     }
 
     uploadSpeedController.close();
@@ -197,10 +248,12 @@ class _SignInDemoState extends State<SignInDemo> {
               },
             ),
           ),
-          actions: [
+          actions: <Widget>[
             TextButton(
-              onPressed: () => Navigator.of(context).pop(),
               child: Text('Close'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
             ),
           ],
         );
@@ -235,12 +288,16 @@ class _SignInDemoState extends State<SignInDemo> {
                     onPressed: _uploadFolder,
                   ),
                   ElevatedButton(
-                    child: Text(_isPaused ? 'Resume Upload' : 'Pause Upload'),
+                    child: Text(_isPaused ? 'Resume' : 'Pause'),
                     onPressed: _togglePause,
                   ),
                   ElevatedButton(
-                    child: Text('View Upload History'),
+                    child: Text('View History'),
                     onPressed: _showHistory,
+                  ),
+                  ElevatedButton(
+                    child: Text('Retry Failed Uploads'),
+                    onPressed: _retryFailedUploads,
                   ),
                   ValueListenableBuilder<int>(
                     valueListenable: _uploadedCount,
