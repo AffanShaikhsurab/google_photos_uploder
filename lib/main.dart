@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:oauth2/oauth2.dart' as oauth2;
 import 'package:url_launcher/url_launcher.dart';
@@ -25,8 +26,7 @@ class SignInDemo extends StatefulWidget {
 }
 
 class _SignInDemoState extends State<SignInDemo> {
-  final authorizationEndpoint =
-      Uri.parse('https://accounts.google.com/o/oauth2/auth');
+  final authorizationEndpoint = Uri.parse('https://accounts.google.com/o/oauth2/auth');
   final tokenEndpoint = Uri.parse('https://oauth2.googleapis.com/token');
   final identifier = '99345842123-qmj0uj6l5v2dosdbhsdredcfveokp10m.apps.googleusercontent.com';
   final secret = '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';
@@ -39,27 +39,23 @@ class _SignInDemoState extends State<SignInDemo> {
   final ValueNotifier<int> _totalCount = ValueNotifier<int>(0);
   final ValueNotifier<double> _uploadSpeed = ValueNotifier<double>(0.0);
   final ValueNotifier<int> _estimatedTime = ValueNotifier<int>(0);
+  final ValueNotifier<int> _currentFileSize = ValueNotifier<int>(0);
+
+  bool _isPaused = false;
+  List<Map<String, dynamic>> _uploadHistory = [];
 
   Future<void> _signIn() async {
-    final grant = oauth2.AuthorizationCodeGrant(
-        identifier, authorizationEndpoint, tokenEndpoint,
-        secret: secret);
-    final authorizationUrl = grant.getAuthorizationUrl(redirectUrl,
-        scopes: scopes);
+    final grant = oauth2.AuthorizationCodeGrant(identifier, authorizationEndpoint, tokenEndpoint, secret: secret);
+    final authorizationUrl = grant.getAuthorizationUrl(redirectUrl, scopes: scopes);
 
-    // Launch the authorization URL in the user's browser
     if (await canLaunch(authorizationUrl.toString())) {
       await launch(authorizationUrl.toString());
     } else {
       throw 'Could not launch $authorizationUrl';
     }
 
-    // Listen on a local port for the redirect from the authorization server
     final responseUrl = await listenForRedirect(redirectUrl);
-
-    // Handle the redirect response and obtain the credentials
-    _client = await grant.handleAuthorizationResponse(
-        responseUrl.queryParameters);
+    _client = await grant.handleAuthorizationResponse(responseUrl.queryParameters);
 
     setState(() {});
   }
@@ -77,6 +73,58 @@ class _SignInDemoState extends State<SignInDemo> {
     return responseUrl;
   }
 
+  Future<void> _uploadFile(File file, String filename, int totalBytes, Stopwatch stopwatch, StreamController<double> uploadSpeedController) async {
+    final bytes = await file.readAsBytes();
+    final fileSize = bytes.length;
+    _currentFileSize.value = fileSize;
+
+    final uploadTokenResponse = await _client!.post(
+      Uri.parse('https://photoslibrary.googleapis.com/v1/uploads'),
+      headers: {
+        'Content-type': 'application/octet-stream',
+        'X-Goog-Upload-File-Name': filename,
+        'X-Goog-Upload-Protocol': 'raw',
+      },
+      body: bytes,
+    );
+
+    if (uploadTokenResponse.statusCode == 200) {
+      final uploadToken = uploadTokenResponse.body;
+
+      final createMediaItemResponse = await _client!.post(
+        Uri.parse('https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate'),
+        headers: {
+          'Content-type': 'application/json',
+        },
+        body: jsonEncode({
+          'newMediaItems': [
+            {
+              'description': 'Uploaded from Flutter app',
+              'simpleMediaItem': {
+                'uploadToken': uploadToken,
+              }
+            }
+          ]
+        }),
+      );
+
+      if (createMediaItemResponse.statusCode == 200) {
+        _uploadHistory.add({'filename': filename, 'status': 'Success'});
+      } else {
+        _uploadHistory.add({'filename': filename, 'status': 'Failed to create media item'});
+      }
+    } else {
+      _uploadHistory.add({'filename': filename, 'status': 'Failed to upload photo'});
+    }
+
+    final elapsedTime = stopwatch.elapsedMilliseconds / 1000; // seconds
+    final uploadedBytes = bytes.length;
+    final uploadSpeed = uploadedBytes / elapsedTime / 1024; // kB/s
+
+    _uploadedCount.value++;
+    uploadSpeedController.add(uploadSpeed);
+  }
+
   Future<void> _uploadFolder() async {
     if (_client == null) return;
 
@@ -87,7 +135,6 @@ class _SignInDemoState extends State<SignInDemo> {
     );
 
     if (result == null || result.count == 0) {
-      // No files selected or dialog cancelled
       return;
     }
 
@@ -95,9 +142,9 @@ class _SignInDemoState extends State<SignInDemo> {
     _uploadedCount.value = 0;
     _uploadSpeed.value = 0.0;
     _estimatedTime.value = 0;
+    _uploadHistory.clear();
 
     int totalBytes = 0;
-
     for (var pickedFile in result.files) {
       final file = File(pickedFile.path!);
       totalBytes += await file.length();
@@ -105,61 +152,60 @@ class _SignInDemoState extends State<SignInDemo> {
 
     final stopwatch = Stopwatch()..start();
 
-    for (var pickedFile in result.files) {
-      final file = File(pickedFile.path!);
-      final bytes = await file.readAsBytes();
-      final filename = pickedFile.name;
-
-      final uploadTokenResponse = await _client!.post(
-        Uri.parse('https://photoslibrary.googleapis.com/v1/uploads'),
-        headers: {
-          'Content-type': 'application/octet-stream',
-          'X-Goog-Upload-File-Name': filename,
-          'X-Goog-Upload-Protocol': 'raw',
-        },
-        body: bytes,
-      );
-
-      if (uploadTokenResponse.statusCode == 200) {
-        final uploadToken = uploadTokenResponse.body;
-
-        final createMediaItemResponse = await _client!.post(
-          Uri.parse('https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate'),
-          headers: {
-            'Content-type': 'application/json',
-          },
-          body: jsonEncode({
-            'newMediaItems': [
-              {
-                'description': 'Uploaded from Flutter app',
-                'simpleMediaItem': {
-                  'uploadToken': uploadToken,
-                }
-              }
-            ]
-          }),
-        );
-
-        if (createMediaItemResponse.statusCode == 200) {
-          print('Photo uploaded successfully: $filename');
-        } else {
-          print('Failed to create media item for $filename.');
-        }
-      } else {
-        print('Failed to upload photo: $filename.');
-      }
-
-      _uploadedCount.value++;
-
-      final elapsedTime = stopwatch.elapsedMilliseconds / 1000; // seconds
-      final totalUploadedBytes = totalBytes * _uploadedCount.value / _totalCount.value;
-      final uploadSpeed = totalUploadedBytes / elapsedTime / 1024; // kB/s
-      final remainingBytes = totalBytes - totalUploadedBytes;
-      final estimatedRemainingTime = remainingBytes / (uploadSpeed * 1024);
-
-      _uploadSpeed.value = uploadSpeed;
+    final uploadSpeedController = StreamController<double>();
+    uploadSpeedController.stream.listen((uploadSpeed) {
+      _uploadSpeed.value = (_uploadSpeed.value * (_uploadedCount.value - 1) + uploadSpeed) / _uploadedCount.value;
+      final remainingBytes = totalBytes - (_uploadSpeed.value * 1024 * stopwatch.elapsedMilliseconds / 1000).toInt();
+      final estimatedRemainingTime = remainingBytes / (_uploadSpeed.value * 1024);
       _estimatedTime.value = estimatedRemainingTime.toInt();
+    });
+
+    for (var pickedFile in result.files) {
+      while (_isPaused) {
+        await Future.delayed(Duration(milliseconds: 100));
+      }
+      final file = File(pickedFile.path!);
+      final filename = pickedFile.name;
+      await _uploadFile(file, filename, totalBytes, stopwatch, uploadSpeedController);
     }
+
+    uploadSpeedController.close();
+  }
+
+  void _togglePause() {
+    setState(() {
+      _isPaused = !_isPaused;
+    });
+  }
+
+  void _showHistory() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Upload History'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView.builder(
+              itemCount: _uploadHistory.length,
+              itemBuilder: (context, index) {
+                final historyItem = _uploadHistory[index];
+                return ListTile(
+                  title: Text(historyItem['filename']),
+                  subtitle: Text(historyItem['status']),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -188,6 +234,14 @@ class _SignInDemoState extends State<SignInDemo> {
                     child: Text('Upload Folder'),
                     onPressed: _uploadFolder,
                   ),
+                  ElevatedButton(
+                    child: Text(_isPaused ? 'Resume Upload' : 'Pause Upload'),
+                    onPressed: _togglePause,
+                  ),
+                  ElevatedButton(
+                    child: Text('View Upload History'),
+                    onPressed: _showHistory,
+                  ),
                   ValueListenableBuilder<int>(
                     valueListenable: _uploadedCount,
                     builder: (context, uploadedCount, child) {
@@ -215,6 +269,13 @@ class _SignInDemoState extends State<SignInDemo> {
                                 valueListenable: _estimatedTime,
                                 builder: (context, estimatedTime, child) {
                                   return Text('Estimated Time Remaining: ${estimatedTime.toString()} seconds');
+                                },
+                              ),
+                              SizedBox(height: 20),
+                              ValueListenableBuilder<int>(
+                                valueListenable: _currentFileSize,
+                                builder: (context, currentFileSize, child) {
+                                  return Text('Current File Size: ${currentFileSize / 1024} kB');
                                 },
                               ),
                             ],

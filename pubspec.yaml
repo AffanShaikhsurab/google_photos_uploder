@@ -13,6 +13,8 @@ dependencies:
   google_sign_in: ^6.2.1
   http: ^1.2.1
   image_picker: ^1.1.1
+  shared_preferences: ^2.0.13  # Add this line
+
   oauth2: ^2.0.2
   path_provider: ^2.1.3
   url_launcher: ^6.2.6
