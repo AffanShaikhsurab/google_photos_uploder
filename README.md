@@ -13,7 +13,7 @@ Welcome to the Google Photos Uploader project! This project is an open-source so
 - [Contributing](#contributing)
 - [License](#license)
 
-Setup Credentials : visit here ![https://github.com/AffanShaikhsurab/google_photos_uploder/blob/main/CREDENTIALS.MD]
+Setup Credentials : [visit here](https://github.com/AffanShaikhsurab/google_photos_uploder/blob/main/CREDENTIALS.MD)
 ## Introduction
 
 The Google Photos Uploader is a cross-platform application built with Flutter, designed to facilitate the uploading of photos to Google Photos from  Windows.
