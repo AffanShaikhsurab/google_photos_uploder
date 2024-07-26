@@ -11,6 +11,7 @@ import 'package:oauth2/oauth2.dart' as oauth2;
 import 'package:pics_uploder/ImageState.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:path_provider/path_provider.dart';
 
 class ImagesCubit extends Cubit<ImagesState> {
   ImagesCubit()
@@ -25,15 +26,15 @@ class ImagesCubit extends Cubit<ImagesState> {
           client: null,
         ));
 
-
-  final authorizationEndpoint = Uri.parse('https://accounts.google.com/o/oauth2/auth');
-  final tokenEndpoint = Uri.parse('https://oauth2.googleapis.com/token');
-  final identifier = '99345842123-qmj0uj6l5v2dosdbhsdredcfveokp10m.apps.googleusercontent.com';
-  final secret = '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';
-  final redirectUrl = Uri.parse('http://localhost:8080');
-  final scopes = ['https://www.googleapis.com/auth/photoslibrary'];
+  late final Uri authorizationEndpoint;
+  late final Uri tokenEndpoint;
+  late final String identifier;
+  late final String secret;
+  late final Uri redirectUrl;
+  late final List<String> scopes;
 
   Future<void> initialize() async {
+    await _loadCredentials();
     await _loadHistory();
     await _loadClient();
     await _loadUploadState();
@@ -41,6 +42,20 @@ class ImagesCubit extends Cubit<ImagesState> {
     if (state.uploadHistory.any((upload) => upload['status'] != 'Success')) {
       await _retryFailedUploads();
     }
+  }
+
+  Future<void> _loadCredentials() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final file = File('${directory.path}/credentials.json');
+    final jsonString = await file.readAsString();
+    final credentials = jsonDecode(jsonString);
+
+    identifier = credentials['identifier'];
+    secret = credentials['secret'];
+    authorizationEndpoint = Uri.parse(credentials['authorizationEndpoint']);
+    tokenEndpoint = Uri.parse(credentials['tokenEndpoint']);
+    redirectUrl = Uri.parse(credentials['redirectUrl']);
+    scopes = List<String>.from(credentials['scopes']);
   }
 
   Future<void> _loadHistory() async {
@@ -126,8 +141,9 @@ class ImagesCubit extends Cubit<ImagesState> {
     return responseUrl;
   }
 
-   FwDltime? _fwDltime;
-Future<void> uploadFolder() async {
+  FwDltime? _fwDltime;
+
+  Future<void> uploadFolder() async {
     if (state.client == null) return;
 
     final result = await FilePicker.platform.pickFiles(
@@ -153,13 +169,13 @@ Future<void> uploadFolder() async {
     final stopwatch = Stopwatch()..start();
 
     final uploadSpeedController = StreamController<double>();
-uploadSpeedController.stream.listen((uploadSpeed) {
-  final updatedUploadSpeed = (state.uploadSpeed * (state.uploadedCount - 1) + uploadSpeed) / state.uploadedCount;
-  final uploadedBytes = state.uploadedCount * (totalBytes / state.totalCount);
-  final remainingBytes = totalBytes - uploadedBytes;
-  final estimatedRemainingTime = remainingBytes / (updatedUploadSpeed * 1024);
-  emit(state.copyWith(uploadSpeed: updatedUploadSpeed, estimatedTime: estimatedRemainingTime.toInt()));
-});
+    uploadSpeedController.stream.listen((uploadSpeed) {
+      final updatedUploadSpeed = (state.uploadSpeed * (state.uploadedCount - 1) + uploadSpeed) / state.uploadedCount;
+      final uploadedBytes = state.uploadedCount * (totalBytes / state.totalCount);
+      final remainingBytes = totalBytes - uploadedBytes;
+      final estimatedRemainingTime = remainingBytes / (updatedUploadSpeed * 1024);
+      emit(state.copyWith(uploadSpeed: updatedUploadSpeed, estimatedTime: estimatedRemainingTime.toInt()));
+    });
 
     for (var pickedFile in result.files) {
       while (state.isPaused) {
@@ -226,6 +242,7 @@ uploadSpeedController.stream.listen((uploadSpeed) {
     emit(state.copyWith(uploadedCount: state.uploadedCount + 1));
     uploadSpeedController.add(uploadSpeed);
   }
+
   Future<void> _retryFailedUploads() async {
     if (state.client == null) return;
 
